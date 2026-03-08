@@ -5,6 +5,8 @@
 - Add `auth paste`, wire `--no-input`, and improve cookie diagnostics/cleanup (`#5`, thanks @im-zayan)
 - Add `play --shuffle`, Connect library/playlist support, and context-aware Connect play payloads (`#15`, thanks @StandardGage)
 - Fix Connect track artist extraction for nested artist containers and minimal artist fragments (`#7`, thanks @joelbdavies)
+- Fix silent `auth import` failures by retrying Spotify auth cookie lookup across related hosts and surfacing browser warnings (`#13`)
+- Fix `device set` when Connect state has no origin device by falling back to Web API transfer (`#8`)
 
 ## 0.3.0 - 2026-03-08
 

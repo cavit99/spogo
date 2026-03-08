@@ -42,6 +42,7 @@ spogo [global flags] <command> [args]
   - `--browser-profile <name>`
   - `--cookie-path <file>`
   - `--domain <host>` default `spotify.com`
+  - when browser reads fail, surface underlying browser-store warnings
 - `spogo auth paste`
   - reads cookie values from stdin (prompts when interactive)
   - `--cookie-path <file>`
@@ -112,6 +113,7 @@ spogo [global flags] <command> [args]
 
 - `spogo device list`
 - `spogo device set <name|id>`
+  - falls back to Web API transfer when Connect state has no origin device
 
 ## Output contract
 

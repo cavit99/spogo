@@ -23,7 +23,7 @@ func (c *ConnectClient) transfer(ctx context.Context, deviceID string) error {
 	return withConnectStateErr(ctx, c, func(state connectState) error {
 		fromID := connectTransferSourceID(state)
 		if fromID == "" {
-			return errors.New("missing origin device id")
+			return c.transferViaWebAPI(ctx, deviceID)
 		}
 		return c.sendConnectCommand(ctx, fmt.Sprintf("%s/connect/transfer/from/%s/to/%s", connectStateBase, fromID, deviceID), map[string]any{
 			"transfer_options": map[string]any{
@@ -31,6 +31,12 @@ func (c *ConnectClient) transfer(ctx context.Context, deviceID string) error {
 			},
 			"command_id": randomHex(32),
 		})
+	})
+}
+
+func (c *ConnectClient) transferViaWebAPI(ctx context.Context, deviceID string) error {
+	return withWebFallback(c, func(web *Client) error {
+		return web.Transfer(ctx, deviceID)
 	})
 }
 

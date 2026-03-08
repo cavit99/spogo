@@ -97,6 +97,7 @@ spogo auth import --browser chrome
 ```
 
 Defaults: Chrome + Default profile. Cookies are stored under your config directory (per profile).
+If import still fails, `spogo` now surfaces browser-store warnings instead of only printing `no cookies found`.
 
 ### Manual cookie paste (WSL fallback)
 
