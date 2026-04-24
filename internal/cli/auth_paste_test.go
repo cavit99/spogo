@@ -60,6 +60,24 @@ func TestReadPromptCookieValueRequiredRejectsEmpty(t *testing.T) {
 	}
 }
 
+func TestPromptPastedCookies(t *testing.T) {
+	ctx, _, errOut := testutil.NewTestContext(t, output.FormatPlain)
+	withStdin(t, "sp_dc=token\nkey\nsp_t=device\n", func() {
+		values, err := promptPastedCookies(ctx.Output)
+		if err != nil {
+			t.Fatalf("prompt pasted cookies: %v", err)
+		}
+		if values.spdc != "token" || values.spkey != "key" || values.spt != "device" {
+			t.Fatalf("unexpected values: %#v", values)
+		}
+	})
+	for _, want := range []string{"sp_dc", "sp_key", "sp_t"} {
+		if !strings.Contains(errOut.String(), want) {
+			t.Fatalf("expected prompt for %s in %q", want, errOut.String())
+		}
+	}
+}
+
 func TestParsePastedCookiesAnyOrder(t *testing.T) {
 	values, err := parsePastedCookies(strings.NewReader("sp_t=device\nsp_dc=token\nsp_key=key\n"))
 	if err != nil {

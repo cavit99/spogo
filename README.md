@@ -88,6 +88,15 @@ Commands:
 
 Full spec: `docs/spec.md`.
 
+## Development
+
+```bash
+make format
+make check
+```
+
+`make check` runs lint, unit tests, race tests, and the coverage threshold used by CI.
+
 ## Cookies
 
 `spogo` uses browser cookies (via `sweetcookie`) to fetch a web access token. Import cookies once:

@@ -13,11 +13,14 @@ import (
 
 type AppleScriptClient struct {
 	fallback API
+	run      scriptRunner
 }
 
 type AppleScriptOptions struct {
 	Fallback API
 }
+
+type scriptRunner func(context.Context, string) (string, error)
 
 func NewAppleScriptClient(opts AppleScriptOptions) (API, error) {
 	return &AppleScriptClient{
@@ -26,6 +29,13 @@ func NewAppleScriptClient(opts AppleScriptOptions) (API, error) {
 }
 
 func (c *AppleScriptClient) runScript(ctx context.Context, script string) (string, error) {
+	if c.run != nil {
+		return c.run(ctx, script)
+	}
+	return runAppleScript(ctx, script)
+}
+
+func runAppleScript(ctx context.Context, script string) (string, error) {
 	cmd := exec.CommandContext(ctx, "osascript", "-e", script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

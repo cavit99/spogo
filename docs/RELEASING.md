@@ -20,8 +20,7 @@ Assumptions:
 
 ## 1) Verify build is green
 ```sh
-./scripts/lint.sh
-./scripts/check-coverage.sh 90
+make check
 ```
 
 Confirm GitHub Actions `CI` is green for the commit you’re tagging:

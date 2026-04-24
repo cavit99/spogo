@@ -166,7 +166,7 @@ func TestConnectTransferFallsBackToWebAPIWithoutOriginDevice(t *testing.T) {
 			return textResponse(http.StatusNoContent, ""), nil
 		case req.Method == http.MethodPost:
 			t.Fatalf("unexpected connect command: %s", req.URL.Path)
-			return nil, nil
+			return textResponse(http.StatusInternalServerError, "unexpected connect command"), nil
 		default:
 			return textResponse(http.StatusNotFound, "missing"), nil
 		}

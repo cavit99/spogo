@@ -60,6 +60,35 @@ func TestEnsureTimeout(t *testing.T) {
 	}
 }
 
+func TestCommandContext(t *testing.T) {
+	type contextKey string
+
+	var nilCtx *Context
+	if nilCtx.CommandContext() == nil {
+		t.Fatalf("expected background context for nil receiver")
+	}
+
+	ctx := &Context{}
+	if ctx.CommandContext() == nil {
+		t.Fatalf("expected background context")
+	}
+
+	const key contextKey = "key"
+	custom := context.WithValue(context.Background(), key, "value")
+	ctx.SetCommandContext(custom)
+	if got := ctx.CommandContext().Value(key); got != "value" {
+		t.Fatalf("context value = %v", got)
+	}
+
+	var nilCommandCtx context.Context
+	ctx.SetCommandContext(nilCommandCtx)
+	if ctx.CommandContext() == nil {
+		t.Fatalf("expected background context after nil set")
+	}
+
+	nilCtx.SetCommandContext(context.Background())
+}
+
 func TestSpotifyCachedClient(t *testing.T) {
 	ctx := &Context{}
 	ctx.SetSpotify(dummySpotify{})
@@ -96,6 +125,13 @@ func TestSaveProfileNilContext(t *testing.T) {
 	}
 }
 
+func TestSaveProfileNilConfig(t *testing.T) {
+	ctx := &Context{}
+	if err := ctx.SaveProfile(config.Profile{Market: "US"}); err == nil {
+		t.Fatalf("expected error")
+	}
+}
+
 func TestCookieSourceFile(t *testing.T) {
 	ctx := &Context{Profile: config.Profile{CookiePath: "/tmp/cookies.json"}}
 	src, err := ctx.cookieSource()
@@ -127,6 +163,28 @@ func TestCookieSourceDefaultBrowser(t *testing.T) {
 	browser, ok := src.(cookies.BrowserSource)
 	if !ok || browser.Browser != "chrome" {
 		t.Fatalf("expected chrome source")
+	}
+}
+
+func TestCookieSourceDefaultFile(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	ctx := &Context{ConfigPath: configPath, ProfileKey: "default"}
+	cookiePath := config.CookiePath(configPath, "default")
+	if err := os.MkdirAll(filepath.Dir(cookiePath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(cookiePath, []byte("[]"), 0o644); err != nil {
+		t.Fatalf("write cookie file: %v", err)
+	}
+
+	src, err := ctx.cookieSource()
+	if err != nil {
+		t.Fatalf("cookie source: %v", err)
+	}
+	fileSource, ok := src.(cookies.FileSource)
+	if !ok || fileSource.Path != cookiePath {
+		t.Fatalf("expected default file source, got %#v", src)
 	}
 }
 
@@ -229,6 +287,46 @@ func TestValidateProfileOK(t *testing.T) {
 	ctx := &Context{Profile: config.Profile{Market: "US"}}
 	if err := ctx.ValidateProfile(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveProfileKey(t *testing.T) {
+	cfg := &config.Config{DefaultProfile: "work"}
+	if got := resolveProfileKey(cfg, "personal"); got != "personal" {
+		t.Fatalf("requested profile = %q", got)
+	}
+	if got := resolveProfileKey(cfg, ""); got != "work" {
+		t.Fatalf("default profile = %q", got)
+	}
+	if got := resolveProfileKey(nil, ""); got != config.DefaultProfile {
+		t.Fatalf("nil config profile = %q", got)
+	}
+}
+
+func TestApplySettingsOverrides(t *testing.T) {
+	profile := applySettings(config.Profile{
+		Market:   "GB",
+		Language: "en",
+		Device:   "desk",
+		Engine:   "connect",
+	}, Settings{
+		Market:   "US",
+		Language: "tr",
+		Device:   "phone",
+		Engine:   "web",
+	})
+	if profile.Market != "US" || profile.Language != "tr" || profile.Device != "phone" || profile.Engine != "web" {
+		t.Fatalf("settings not applied: %#v", profile)
+	}
+}
+
+func TestNewOutputWriterDefaultFormat(t *testing.T) {
+	writer, err := newOutputWriter(Settings{})
+	if err != nil {
+		t.Fatalf("new output writer: %v", err)
+	}
+	if writer == nil {
+		t.Fatalf("expected writer")
 	}
 }
 
