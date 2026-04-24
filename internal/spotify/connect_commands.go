@@ -16,7 +16,26 @@ func (c *ConnectClient) playback(ctx context.Context) (PlaybackStatus, error) {
 
 func (c *ConnectClient) devices(ctx context.Context) ([]Device, error) {
 	return withConnectState(ctx, c, func(state connectState) ([]Device, error) {
-		return mapDevices(state), nil
+		all := mapDevices(state)
+		c.session.mu.Lock()
+		selfID := c.session.connectDeviceID
+		c.session.mu.Unlock()
+		out := make([]Device, 0, len(all))
+		for _, d := range all {
+			if selfID != "" && d.ID == selfID {
+				continue
+			}
+			// Also hide stale spogo bridge registrations from previous
+			// processes — they linger in Spotify's device list for up
+			// to ~10 minutes after the owning process exits, and
+			// exposing them tricks callers into targeting a virtual
+			// device that can't play.
+			if d.Name == connectDeviceName {
+				continue
+			}
+			out = append(out, d)
+		}
+		return out, nil
 	})
 }
 
