@@ -17,7 +17,7 @@ const (
 	connectStateBase   = "https://gue1-spclient.spotify.com/connect-state/v1"
 	trackPlaybackBase  = "https://gue1-spclient.spotify.com/track-playback/v1"
 	connectionTTL      = 10 * time.Minute
-	connectDeviceName  = "spogo"
+	connectDeviceName  = "Merid"
 	connectDeviceModel = "web_player"
 )
 
