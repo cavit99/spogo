@@ -67,6 +67,10 @@ func (c *Context) ResolveCookiePath() string {
 	return config.CookiePath(c.ConfigPath, c.ProfileKey)
 }
 
+func (c *Context) ResolveStatePath() string {
+	return config.StatePath(c.ConfigPath, c.ProfileKey)
+}
+
 func (c *Context) EnsureTimeout() time.Duration {
 	if c.Settings.Timeout > 0 {
 		return c.Settings.Timeout

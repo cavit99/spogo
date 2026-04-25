@@ -11,11 +11,12 @@ import (
 )
 
 type ConnectOptions struct {
-	Source   cookies.Source
-	Market   string
-	Language string
-	Device   string
-	Timeout  time.Duration
+	Source    cookies.Source
+	Market    string
+	Language  string
+	Device    string
+	Timeout   time.Duration
+	StatePath string // optional; persists bootstrap-state cache across invocations
 }
 
 type ConnectClient struct {
@@ -42,8 +43,9 @@ func NewConnectClient(opts ConnectOptions) (*ConnectClient, error) {
 	}
 	httpClient := &http.Client{Timeout: timeout}
 	session := &connectSession{
-		source: opts.Source,
-		client: httpClient,
+		source:    opts.Source,
+		client:    httpClient,
+		statePath: opts.StatePath,
 	}
 	return &ConnectClient{
 		source:   opts.Source,

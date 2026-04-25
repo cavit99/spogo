@@ -24,15 +24,21 @@ type connectSession struct {
 	source cookies.Source
 	client *http.Client
 
+	statePath  string // optional, persists tokens + clientVersion + connectDeviceID across invocations
+	stateLoad  sync.Once
+	stateDirty bool // any field below has been refreshed and should be flushed to disk
+
 	mu sync.Mutex
 
-	token        Token
-	clientToken  string
-	clientTokenT time.Time
-	clientID     string
-	clientVer    string
-	connectVer   string
-	deviceID     string
+	token         Token
+	clientToken   string
+	clientTokenT  time.Time
+	clientID      string
+	clientVer     string
+	clientVerAt   time.Time
+	connectVer    string
+	deviceID      string
+	cookieFprint  string
 
 	connectDeviceID string
 	connectionID    string
@@ -50,6 +56,7 @@ type connectAuth struct {
 func (s *connectSession) auth(ctx context.Context) (connectAuth, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.loadStateOnceLocked(ctx)
 	if err := s.ensureTokenLocked(ctx); err != nil {
 		return connectAuth{}, err
 	}
@@ -59,6 +66,7 @@ func (s *connectSession) auth(ctx context.Context) (connectAuth, error) {
 	if err := s.ensureClientTokenLocked(ctx); err != nil {
 		return connectAuth{}, err
 	}
+	s.flushStateLocked()
 	return connectAuth{
 		AccessToken:    s.token.AccessToken,
 		ClientToken:    s.clientToken,
@@ -66,6 +74,61 @@ func (s *connectSession) auth(ctx context.Context) (connectAuth, error) {
 		ConnectVersion: s.connectVer,
 		DeviceID:       s.deviceID,
 	}, nil
+}
+
+// loadStateOnceLocked seeds the session from the on-disk cache the first
+// time `auth` runs in this process. Subsequent calls are no-ops. Mismatched
+// cookie fingerprint (account switch / reimport) drops everything.
+func (s *connectSession) loadStateOnceLocked(ctx context.Context) {
+	s.stateLoad.Do(func() {
+		if s.statePath == "" {
+			return
+		}
+		cookiesList, err := s.source.Cookies(ctx)
+		if err != nil {
+			return
+		}
+		s.cookieFprint = cookieFingerprint(cookiesList)
+		p := loadPersistedSession(s.statePath, s.cookieFprint)
+		if p.AccessToken != "" {
+			s.token = Token{AccessToken: p.AccessToken, ExpiresAt: p.AccessTokenExpiresAt, ClientID: p.ClientID}
+		}
+		if p.ClientID != "" {
+			s.clientID = p.ClientID
+		}
+		if p.ClientToken != "" {
+			s.clientToken = p.ClientToken
+			s.clientTokenT = p.ClientTokenExpiresAt
+		}
+		if p.ClientVersion != "" {
+			s.clientVer = p.ClientVersion
+			s.clientVerAt = p.ClientVersionAt
+			s.connectVer = connectClientVersion()
+		}
+		if p.ConnectDeviceID != "" {
+			s.connectDeviceID = p.ConnectDeviceID
+		}
+	})
+}
+
+// flushStateLocked writes the current session state to disk if it changed.
+// Best-effort; failures are silent. Caller must hold s.mu.
+func (s *connectSession) flushStateLocked() {
+	if s.statePath == "" || !s.stateDirty {
+		return
+	}
+	s.stateDirty = false
+	savePersistedSession(s.statePath, persistedSession{
+		CookieFingerprint:    s.cookieFprint,
+		AccessToken:          s.token.AccessToken,
+		AccessTokenExpiresAt: s.token.ExpiresAt,
+		ClientToken:          s.clientToken,
+		ClientTokenExpiresAt: s.clientTokenT,
+		ClientID:             s.clientID,
+		ClientVersion:        s.clientVer,
+		ClientVersionAt:      s.clientVerAt,
+		ConnectDeviceID:      s.connectDeviceID,
+	})
 }
 
 func (s *connectSession) ensureTokenLocked(ctx context.Context) error {
@@ -81,6 +144,7 @@ func (s *connectSession) ensureTokenLocked(ctx context.Context) error {
 	if token.ClientID != "" {
 		s.clientID = token.ClientID
 	}
+	s.stateDirty = true
 	return nil
 }
 
@@ -148,8 +212,13 @@ func (s *connectSession) ensureAppConfigLocked(ctx context.Context) error {
 		clientVer = clientVer[:idx]
 	}
 	s.clientVer = clientVer
+	s.clientVerAt = time.Now()
 	s.connectVer = connectClientVersion()
 	s.deviceID = deviceID
+	if s.cookieFprint == "" {
+		s.cookieFprint = cookieFingerprint(cookiesList)
+	}
+	s.stateDirty = true
 	return nil
 }
 
@@ -221,6 +290,7 @@ func (s *connectSession) ensureClientTokenLocked(ctx context.Context) error {
 	} else {
 		s.clientTokenT = time.Now().Add(30 * time.Minute)
 	}
+	s.stateDirty = true
 	return nil
 }
 

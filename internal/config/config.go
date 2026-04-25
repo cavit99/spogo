@@ -128,6 +128,22 @@ func CookiePath(configPath, profile string) string {
 	return filepath.Join(base, "cookies", profile+".json")
 }
 
+// StatePath returns the path to the persisted bootstrap-state cache for a
+// profile (sibling to CookiePath). The file caches access/client tokens,
+// clientVersion, clientID, and connectDeviceID across spogo invocations
+// so a warm cold-start can skip ~1s of bootstrap fetches. See
+// `internal/spotify/connect_session_persist.go`.
+func StatePath(configPath, profile string) string {
+	if profile == "" {
+		profile = DefaultProfile
+	}
+	if configPath == "" {
+		return ""
+	}
+	base := filepath.Dir(configPath)
+	return filepath.Join(base, "state", profile+".json")
+}
+
 func (c *Config) normalize() {
 	if c.DefaultProfile == "" {
 		c.DefaultProfile = DefaultProfile
