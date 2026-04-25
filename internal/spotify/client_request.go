@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -38,10 +37,15 @@ func (c *Client) postParams(ctx context.Context, path string, params url.Values)
 
 func (c *Client) send(ctx context.Context, method, path string, params url.Values, payload any, dest any) error {
 	const (
-		maxAttempts   = 3
-		maxRetryDelay = 3 * time.Second
+		// Loop while each step's `Retry-After` is ≤ maxRetryDelay AND the
+		// cumulative wait stays ≤ maxTotalWait. Beyond that, the bucket has
+		// escalated and the caller is better off surfacing than blocking.
+		// These match the connect-state retry caps in connect_transport.go.
+		maxRetryDelay = 10 * time.Second
+		maxTotalWait  = 15 * time.Second
 	)
-	for attempt := 0; attempt < maxAttempts; attempt++ {
+	var totalWait time.Duration
+	for {
 		requestURL := c.baseURL + path
 		if params == nil {
 			if c.market != "" || c.language != "" || ((method == http.MethodPut || method == http.MethodPost || method == http.MethodDelete) && c.device != "") {
@@ -93,22 +97,31 @@ func (c *Client) send(ctx context.Context, method, path string, params url.Value
 		if err != nil {
 			return err
 		}
-		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxAttempts-1 {
-			retryAfter := time.Second
+		if resp.StatusCode == http.StatusTooManyRequests {
+			retryAfter := time.Duration(0)
 			if header := resp.Header.Get("Retry-After"); header != "" {
 				if seconds, err := strconv.Atoi(header); err == nil && seconds > 0 {
 					retryAfter = time.Duration(seconds) * time.Second
 				}
 			}
 			if retryAfter > maxRetryDelay {
-				retryAfter = maxRetryDelay
+				defer func() { _ = resp.Body.Close() }()
+				return apiErrorFromResponse(resp)
+			}
+			wait := retryAfter + 250*time.Millisecond
+			if totalWait+wait > maxTotalWait {
+				defer func() { _ = resp.Body.Close() }()
+				return apiErrorFromResponse(resp)
 			}
 			_ = resp.Body.Close()
+			totalWait += wait
+			// Force a token refresh on the next attempt — covers the
+			// (rare) case where a stale token contributes to the 429.
 			c.mu.Lock()
 			c.lastToken = Token{}
 			c.mu.Unlock()
 			select {
-			case <-time.After(retryAfter):
+			case <-time.After(wait):
 				continue
 			case <-ctx.Done():
 				return ctx.Err()
@@ -132,5 +145,4 @@ func (c *Client) send(ctx context.Context, method, path string, params url.Value
 		}
 		return json.NewDecoder(resp.Body).Decode(dest)
 	}
-	return errors.New("spotify api error (429): rate limit retry exhausted")
 }

@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +21,16 @@ const (
 	connectionTTL      = 10 * time.Minute
 	connectDeviceName  = "merid-bridge"
 	connectDeviceModel = "web_player"
+	// Spotify returns 429 with `Retry-After: <seconds>` and escalates the
+	// window every time spogo retries early. We honour the header
+	// transparently up to perRetryCap per retry, looping until either
+	// success, an over-cap window, or totalBudget is exhausted.
+	// Observed short-window values are typically 1–7s and a single 429 may
+	// take 2–3 short retries to clear; longer windows mean the bucket has
+	// escalated and the caller is better off surfacing to the user than
+	// blocking forever.
+	maxRetryAfterPerStep    = 10
+	maxRetryAfterTotalBudgt = 15 * time.Second
 )
 
 var dealerURL = "wss://dealer.spotify.com/"
@@ -55,19 +67,23 @@ func (c *ConnectClient) connectState(ctx context.Context) (connectState, error) 
 			},
 		},
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, fmt.Sprintf("%s/devices/hobs_%s", connectStateBase, deviceID), encodeJSON(payload))
-	if err != nil {
-		return connectState{}, err
+	stateURL := fmt.Sprintf("%s/devices/hobs_%s", connectStateBase, deviceID)
+	build := func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, stateURL, encodeJSON(payload))
+		if err != nil {
+			return nil, err
+		}
+		applyRequestHeaders(req, requestHeaders{
+			AccessToken:   auth.AccessToken,
+			ClientToken:   auth.ClientToken,
+			ClientVersion: connectVersion(auth),
+			ContentType:   "application/json",
+			AppPlatform:   defaultSpotifyAppPlatform,
+			ConnectionID:  connectionID,
+		})
+		return req, nil
 	}
-	applyRequestHeaders(req, requestHeaders{
-		AccessToken:   auth.AccessToken,
-		ClientToken:   auth.ClientToken,
-		ClientVersion: connectVersion(auth),
-		ContentType:   "application/json",
-		AppPlatform:   defaultSpotifyAppPlatform,
-		ConnectionID:  connectionID,
-	})
-	resp, err := c.client.Do(req)
+	resp, err := doRetryAfter(ctx, c.client, build)
 	if err != nil {
 		return connectState{}, err
 	}
@@ -102,6 +118,7 @@ func (c *ConnectClient) ensureConnectDevice(ctx context.Context, auth connectAut
 	c.session.mu.Lock()
 	if c.session.connectDeviceID == "" {
 		c.session.connectDeviceID = randomHex(32)
+		c.session.stateDirty = true
 	}
 	needs := c.session.connectionID == "" || time.Since(c.session.registeredAt) > connectionTTL
 	c.session.mu.Unlock()
@@ -118,6 +135,7 @@ func (c *ConnectClient) ensureConnectDevice(ctx context.Context, auth connectAut
 	c.session.mu.Lock()
 	c.session.connectionID = connectionID
 	c.session.registeredAt = time.Now()
+	c.session.flushStateLocked()
 	c.session.mu.Unlock()
 	return nil
 }
@@ -157,18 +175,22 @@ func (c *ConnectClient) registerDevice(ctx context.Context, auth connectAuth, co
 		"client_version":            connectVersion(auth),
 		"volume":                    65535,
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, trackPlaybackBase+"/devices", encodeJSON(payload))
-	if err != nil {
-		return err
+	regURL := trackPlaybackBase + "/devices"
+	build := func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, regURL, encodeJSON(payload))
+		if err != nil {
+			return nil, err
+		}
+		applyRequestHeaders(req, requestHeaders{
+			AccessToken:   auth.AccessToken,
+			ClientToken:   auth.ClientToken,
+			ClientVersion: connectVersion(auth),
+			ContentType:   "application/json",
+			AppPlatform:   defaultSpotifyAppPlatform,
+		})
+		return req, nil
 	}
-	applyRequestHeaders(req, requestHeaders{
-		AccessToken:   auth.AccessToken,
-		ClientToken:   auth.ClientToken,
-		ClientVersion: connectVersion(auth),
-		ContentType:   "application/json",
-		AppPlatform:   defaultSpotifyAppPlatform,
-	})
-	resp, err := c.client.Do(req)
+	resp, err := doRetryAfter(ctx, c.client, build)
 	if err != nil {
 		return err
 	}
@@ -215,18 +237,21 @@ func (c *ConnectClient) sendConnectRequest(ctx context.Context, method, url stri
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, method, url, encodeJSON(payload))
-	if err != nil {
-		return err
+	build := func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, method, url, encodeJSON(payload))
+		if err != nil {
+			return nil, err
+		}
+		applyRequestHeaders(req, requestHeaders{
+			AccessToken:   auth.AccessToken,
+			ClientToken:   auth.ClientToken,
+			ClientVersion: connectVersion(auth),
+			ContentType:   "application/json",
+			AppPlatform:   defaultSpotifyAppPlatform,
+		})
+		return req, nil
 	}
-	applyRequestHeaders(req, requestHeaders{
-		AccessToken:   auth.AccessToken,
-		ClientToken:   auth.ClientToken,
-		ClientVersion: connectVersion(auth),
-		ContentType:   "application/json",
-		AppPlatform:   defaultSpotifyAppPlatform,
-	})
-	resp, err := c.client.Do(req)
+	resp, err := doRetryAfter(ctx, c.client, build)
 	if err != nil {
 		return err
 	}
@@ -235,6 +260,57 @@ func (c *ConnectClient) sendConnectRequest(ctx context.Context, method, url stri
 		return apiErrorFromResponse(resp)
 	}
 	return nil
+}
+
+// doRetryAfter performs `build` then, on 429, honours `Retry-After` (in
+// seconds) by sleeping and retrying as long as each step's wait is ≤
+// maxRetryAfterPerStep AND the cumulative wait stays ≤ maxRetryAfterTotalBudgt.
+// Anything beyond that is returned so the caller can surface to the user.
+// This makes Spotify's normal short-window backoff invisible to callers
+// (typical case: 1–3 retries totalling under 15s); the long-window /
+// escalated-bucket case still bubbles up promptly.
+func doRetryAfter(ctx context.Context, client *http.Client, build func() (*http.Request, error)) (*http.Response, error) {
+	var totalWait time.Duration
+	for {
+		req, err := build()
+		if err != nil {
+			return nil, err
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode != http.StatusTooManyRequests {
+			return resp, nil
+		}
+		retryAfter := parseRetryAfterSeconds(resp.Header.Get("Retry-After"))
+		if retryAfter <= 0 || retryAfter > maxRetryAfterPerStep {
+			return resp, nil
+		}
+		wait := time.Duration(retryAfter)*time.Second + 250*time.Millisecond
+		if totalWait+wait > maxRetryAfterTotalBudgt {
+			return resp, nil
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		totalWait += wait
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
+func parseRetryAfterSeconds(value string) int {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if n, err := strconv.Atoi(value); err == nil {
+		return n
+	}
+	return 0
 }
 
 func getConnectionID(ctx context.Context, accessToken string) (string, error) {

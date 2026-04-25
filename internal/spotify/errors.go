@@ -49,5 +49,22 @@ func apiErrorFromResponse(resp *http.Response) error {
 	if message == "" {
 		message = payload.Message
 	}
+	if status == http.StatusTooManyRequests {
+		retryAfter := resp.Header.Get("Retry-After")
+		if retryAfter != "" {
+			if message == "" || message == resp.Status {
+				message = fmt.Sprintf("rate limit exceeded (Retry-After: %s)", retryAfter)
+			} else {
+				message = fmt.Sprintf("%s (Retry-After: %s)", message, retryAfter)
+			}
+		}
+		bodyExcerpt := string(body)
+		if len(bodyExcerpt) > 240 {
+			bodyExcerpt = bodyExcerpt[:240] + "…"
+		}
+		if bodyExcerpt != "" {
+			message = fmt.Sprintf("%s :: body=%q", message, bodyExcerpt)
+		}
+	}
 	return APIError{Status: status, Message: message, Body: string(body)}
 }
